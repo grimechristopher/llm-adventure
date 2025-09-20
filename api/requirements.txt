@@ -1,0 +1,8 @@
+quart==0.19.4
+langchain==0.1.0
+langchain-openai==0.0.5
+langchain-community==0.0.12
+openai==1.6.1
+python-dotenv==1.0.0
+aiofiles==23.2.1
+hypercorn==0.16.0
