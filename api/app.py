@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 
 from config.llm import initialize_llms
 from routes.general import general_routes
+from routes.chat import chat_routes
 from routes.errors import register_error_handlers
 from utils.logging import setup_logging, get_logger
 
@@ -24,12 +25,12 @@ def create_app():
     """Create and configure the app"""
     logger.info("Creating Quart application")
     
-    app = Quart(__name__)
+    app = Quart(__name__, static_folder=None)
     
     # Simple configuration
     app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key')
     app.config['DEBUG'] = os.getenv('DEBUG', 'True').lower() == 'true'
-    app.config['PROVIDE_AUTOMATIC_OPTIONS'] = True  # Required for Quart
+    app.config['PROVIDE_AUTOMATIC_OPTIONS'] = True
     
     logger.info("Initializing LLMs")
     # Initialize LLMs
@@ -38,6 +39,7 @@ def create_app():
     logger.info("Registering routes")
     # Register routes
     app.register_blueprint(general_routes)
+    app.register_blueprint(chat_routes)
     
     # Register error handlers
     register_error_handlers(app)
