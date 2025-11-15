@@ -1,3 +1,7 @@
 /.venv
 api/.venv
 .env
+
+# Ignore log files and Python cache
+*.log
+__pycache__/
