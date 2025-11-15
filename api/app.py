@@ -1,37 +1,46 @@
+"""
+LLM Adventure API Application
+
+A Quart-based API for an LLM-powered adventure game.
+"""
+
 import os
-from quart import Quart, render_template, request, jsonify, session
+from quart import Quart, jsonify
 from dotenv import load_dotenv
-import secrets
-from adventure_game import AdventureGame
+
+from config.llm import initialize_llms
+from routes.general import general_routes
+from routes.errors import register_error_handlers
+from utils.logging import setup_logging, get_logger
 
 # Load environment variables
 load_dotenv()
 
-app = Quart(__name__)
-app.secret_key = os.getenv('SECRET_KEY', secrets.token_hex(16))
+# Setup logging
+setup_logging()
+logger = get_logger(__name__)
 
-# Initialize the adventure game
-adventure_game = AdventureGame()
-
-@app.route('/health')
-async def health():
-    """Health check endpoint"""
-    return jsonify({'status': 'healthy', 'message': 'LLM Adventure API is running'})
-
-@app.errorhandler(404)
-async def not_found(error):
-    return jsonify({'error': 'Endpoint not found'}), 404
-
-@app.errorhandler(500)
-async def internal_error(error):
-    return jsonify({'error': 'Internal server error'}), 500
-
-if __name__ == '__main__':
-    port = int(os.getenv('PORT', 5000))
-    debug = os.getenv('DEBUG', 'False').lower() == 'true'
+def create_app():
+    """Create and configure the app"""
+    logger.info("Creating Quart application")
     
-    app.run(
-        host='0.0.0.0',
-        port=port,
-        debug=debug
-    )
+    app = Quart(__name__)
+    
+    # Simple configuration
+    app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key')
+    app.config['DEBUG'] = os.getenv('DEBUG', 'True').lower() == 'true'
+    app.config['PROVIDE_AUTOMATIC_OPTIONS'] = True  # Required for Quart
+    
+    logger.info("Initializing LLMs")
+    # Initialize LLMs
+    app.llms = initialize_llms()
+    
+    logger.info("Registering routes")
+    # Register routes
+    app.register_blueprint(general_routes)
+    
+    # Register error handlers
+    register_error_handlers(app)
+    
+    logger.info("Application created successfully")
+    return app
