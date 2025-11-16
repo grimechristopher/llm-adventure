@@ -13,7 +13,7 @@ from datetime import datetime
 
 class JSONFormatter(logging.Formatter):
     """Custom JSON formatter for detailed file logging"""
-    
+
     def format(self, record):
         log_entry = {
             'timestamp': datetime.utcnow().isoformat() + 'Z',
@@ -24,17 +24,25 @@ class JSONFormatter(logging.Formatter):
             'function': record.funcName,
             'line': record.lineno
         }
-        
+
         # Add exception info if present
         if record.exc_info:
             log_entry['exception'] = self.formatException(record.exc_info)
-            
-        # Add any extra fields
-        if hasattr(record, 'user_id'):
-            log_entry['user_id'] = record.user_id
-        if hasattr(record, 'request_id'):
-            log_entry['request_id'] = record.request_id
-            
+
+        # Add ALL extra fields from record.__dict__
+        # Skip internal logging fields that start with specific prefixes
+        excluded_keys = {
+            'name', 'msg', 'args', 'created', 'filename', 'funcName',
+            'levelname', 'levelno', 'lineno', 'module', 'msecs',
+            'message', 'pathname', 'process', 'processName',
+            'relativeCreated', 'thread', 'threadName', 'exc_info',
+            'exc_text', 'stack_info', 'taskName'
+        }
+
+        for key, value in record.__dict__.items():
+            if key not in excluded_keys:
+                log_entry[key] = value
+
         return json.dumps(log_entry)
 
 
@@ -53,9 +61,14 @@ class ConsoleFormatter(logging.Formatter):
             return record.getMessage()
 
 
-def setup_logging(level=logging.INFO, log_file='api/logs/app.log'):
+def setup_logging(level=logging.INFO, log_file='logs/app.log'):
     """Setup dual logging configuration"""
-    
+
+    # Get the absolute path to the log file relative to the api directory
+    # This ensures logs go in the correct location regardless of where the script is run from
+    script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    log_file = os.path.join(script_dir, log_file)
+
     # Create logs directory if it doesn't exist
     log_dir = os.path.dirname(log_file)
     if log_dir and not os.path.exists(log_dir):
