@@ -2,6 +2,9 @@ quart==0.19.4
 python-dotenv==1.0.0
 aiofiles==23.2.1
 hypercorn==0.16.0
-langchain==0.3.0
-langchain-openai==0.2.0
-langchain-core==0.3.0
+langchain==0.3.7
+langchain-openai==0.2.8
+langchain-core==0.3.21
+langchain-postgres==0.0.12
+psycopg[binary]==3.2.12
+pydantic==2.9.2
