@@ -9,9 +9,9 @@ from quart import Quart, jsonify
 from dotenv import load_dotenv
 
 from config.llm import initialize_llms
-from config.database import test_postgres_connection, initialize_database
+from config.orm_database import test_postgres_connection, initialize_database
 from routes.general import general_routes
-from routes.chat import chat_routes
+from routes.world_building import world_building_routes
 from routes.errors import register_error_handlers
 from utils.logging import setup_logging, get_logger
 
@@ -40,7 +40,7 @@ def create_app():
     logger.info("Registering routes")
     # Register routes
     app.register_blueprint(general_routes)
-    app.register_blueprint(chat_routes)
+    app.register_blueprint(world_building_routes)
 
     # Register error handlers
     register_error_handlers(app)
