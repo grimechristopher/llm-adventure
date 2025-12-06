@@ -10,6 +10,12 @@ from models import (
     WorldBuildingResponse,
     LocationsResponse,
     FactsResponse,
+    WizardStartRequest,
+    WizardStartResponse,
+    WizardResponseRequest,
+    WizardResponseResponse,
+    WizardFinalizeRequest,
+    WizardFinalizeResponse,
 )
 from config import Config
 
@@ -58,5 +64,37 @@ class APIClient:
             )
             response.raise_for_status()
             return FactsResponse(**response.json())
+
+    # ========== WIZARD ENDPOINTS ==========
+
+    async def wizard_start(self, request: WizardStartRequest) -> WizardStartResponse:
+        """Start a wizard session for world building"""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                f"{self.base_url}/world-building/wizard/start",
+                json=request.model_dump()
+            )
+            response.raise_for_status()
+            return WizardStartResponse(**response.json())
+
+    async def wizard_respond(self, request: WizardResponseRequest) -> WizardResponseResponse:
+        """Respond to a wizard question"""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                f"{self.base_url}/world-building/wizard/respond",
+                json=request.model_dump()
+            )
+            response.raise_for_status()
+            return WizardResponseResponse(**response.json())
+
+    async def wizard_finalize(self, request: WizardFinalizeRequest) -> WizardFinalizeResponse:
+        """Finalize world creation from wizard session"""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                f"{self.base_url}/world-building/wizard/finalize",
+                json=request.model_dump()
+            )
+            response.raise_for_status()
+            return WizardFinalizeResponse(**response.json())
 
 

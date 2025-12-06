@@ -77,3 +77,45 @@ class FactsResponse(BaseModel):
     world_id: int
     count: int
     facts: List[FactData]
+
+
+# ========== WIZARD MODELS ==========
+
+class WizardStartRequest(BaseModel):
+    """Request to start a wizard session"""
+    world_id: int
+
+
+class WizardStartResponse(BaseModel):
+    """Response when starting a wizard session"""
+    session_id: int
+    first_question: str
+    stage: str
+
+
+class WizardResponseRequest(BaseModel):
+    """Request to respond to a wizard question"""
+    session_id: int
+    response: str = Field(min_length=1, max_length=10000)
+
+
+class WizardResponseResponse(BaseModel):
+    """Response after answering a wizard question"""
+    next_question: Optional[str]
+    is_complete: bool
+    current_stage: str
+    gathered_so_far: dict
+    progress_percentage: int
+
+
+class WizardFinalizeRequest(BaseModel):
+    """Request to finalize world generation from wizard session"""
+    session_id: int
+
+
+class WizardFinalizeResponse(BaseModel):
+    """Response after finalizing wizard session"""
+    world_id: int
+    locations_created: int
+    facts_created: int
+    message: str

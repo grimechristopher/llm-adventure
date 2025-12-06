@@ -18,7 +18,13 @@ from display import (
     display_facts_table,
 )
 from api_client import APIClient
-from models import WorldCreate, WorldBuildingRequest
+from models import (
+    WorldCreate,
+    WorldBuildingRequest,
+    WizardStartRequest,
+    WizardResponseRequest,
+    WizardFinalizeRequest,
+)
 
 console = Console()
 
@@ -259,6 +265,99 @@ async def view_facts(config: Config):
     console.print()  # Extra spacing
 
 
+async def wizard_interactive_menu(config: Config):
+    """Interactive wizard for world building with Q&A flow"""
+    show_header(f"World Building Wizard: {state.current_world_name}")
+
+    try:
+        client = APIClient(config)
+
+        # Start wizard session
+        show_info("Starting wizard session...")
+        start_req = WizardStartRequest(world_id=state.current_world_id)
+        start_response = await client.wizard_start(start_req)
+
+        session_id = start_response.session_id
+        show_success(f"Wizard session started (ID: {session_id})")
+        console.print(f"[dim]Stage: {start_response.stage}[/dim]\n")
+
+        # Interactive Q&A loop
+        current_question = start_response.first_question
+        is_complete = False
+
+        while not is_complete:
+            # Display question
+            console.print(f"[bold cyan]{current_question}[/bold cyan]\n")
+
+            # Get user response
+            console.print("[dim]Type your answer and press Enter:[/dim]")
+            user_response = console.input("[green]> [/green]").strip()
+
+            if not user_response:
+                show_error("Response cannot be empty")
+                continue
+
+            # Send response to wizard
+            show_info("Processing your response...")
+            response_req = WizardResponseRequest(
+                session_id=session_id,
+                response=user_response
+            )
+            wizard_response = await client.wizard_respond(response_req)
+
+            # Display progress
+            console.print(f"\n[yellow]Progress: {wizard_response.progress_percentage}% complete[/yellow]")
+            console.print(f"[dim]Current stage: {wizard_response.current_stage}[/dim]\n")
+
+            # Check if complete
+            is_complete = wizard_response.is_complete
+
+            if is_complete:
+                show_success("Wizard complete! You've provided enough information.")
+                console.print(f"\n[bold]Summary of gathered data:[/bold]")
+                gathered = wizard_response.gathered_so_far
+                console.print(f"  Locations: {len(gathered.get('locations', []))}")
+                console.print(f"  Facts: {len(gathered.get('facts', []))}")
+
+                # Ask if user wants to finalize
+                finalize_choice = console.input("\n[cyan]Finalize world creation? (y/n):[/cyan] ").strip().lower()
+
+                if finalize_choice == 'y':
+                    show_info("Finalizing world creation (assigning coordinates, saving to database)...")
+                    finalize_req = WizardFinalizeRequest(session_id=session_id)
+                    finalize_response = await client.wizard_finalize(finalize_req)
+
+                    show_success(finalize_response.message)
+                    console.print(f"\n[bold]Results:[/bold]")
+                    console.print(f"  Locations created: {finalize_response.locations_created}")
+                    console.print(f"  Facts created: {finalize_response.facts_created}")
+                else:
+                    show_info("World creation cancelled. Session data not saved.")
+
+                break
+            else:
+                # Continue with next question
+                current_question = wizard_response.next_question
+
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            show_error("World or session not found")
+        elif e.response.status_code == 400:
+            show_error(f"Validation error: {e.response.text}")
+        elif e.response.status_code >= 500:
+            show_error("Server error - please try again later")
+        else:
+            show_error(f"HTTP {e.response.status_code}: {e.response.text}")
+    except httpx.ConnectError:
+        show_error(f"Cannot connect to API at {config.api_base_url}")
+        show_info("Make sure the API server is running (cd ../api && python run.py)")
+    except httpx.TimeoutException:
+        show_error("Request timed out - LLM processing may take a while")
+    except Exception as e:
+        show_error(f"Unexpected error: {e}")
+
+    console.print()  # Extra spacing
+
 
 async def main_menu():
     """Main menu loop"""
@@ -274,7 +373,7 @@ async def main_menu():
 
         console.print("1. World Management")
         console.print(
-            "2. World Building"
+            "2. World Building (Manual)"
             + (
                 " [dim](select world first)[/dim]"
                 if not state.has_world_selected
@@ -282,14 +381,22 @@ async def main_menu():
             )
         )
         console.print(
-            "3. View World Data"
+            "3. World Building Wizard (Interactive)"
             + (
                 " [dim](select world first)[/dim]"
                 if not state.has_world_selected
                 else ""
             )
         )
-        console.print("4. Exit")
+        console.print(
+            "4. View World Data"
+            + (
+                " [dim](select world first)[/dim]"
+                if not state.has_world_selected
+                else ""
+            )
+        )
+        console.print("5. Exit")
 
         choice = console.input("\n[cyan]Select option:[/cyan] ").strip()
 
@@ -302,10 +409,15 @@ async def main_menu():
                 show_error("Please select a world first (World Management → Select World)")
         elif choice == "3":
             if state.has_world_selected:
-                await view_data_menu(config)
+                await wizard_interactive_menu(config)
             else:
                 show_error("Please select a world first (World Management → Select World)")
         elif choice == "4":
+            if state.has_world_selected:
+                await view_data_menu(config)
+            else:
+                show_error("Please select a world first (World Management → Select World)")
+        elif choice == "5":
             console.print("[yellow]Goodbye![/yellow]")
             break
         else:
