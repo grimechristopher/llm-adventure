@@ -3,8 +3,15 @@ World-building API routes
 """
 from quart import Blueprint, request, jsonify, current_app
 from pydantic import ValidationError
-from models.world_building import WorldCreate, WorldBuildingRequest, WorldBuildingResponse
-from services.world_building_service import WorldBuildingService
+from models.world_building import (
+    WorldCreate,
+    WorldBuildingRequest,
+    WorldBuildingResponse,
+    WizardStartRequest,
+    WizardResponseRequest,
+    WizardFinalizeRequest
+)
+from services.world_building_service import WorldBuildingService, WizardOrchestrationService
 from config.orm_database import get_db_session
 from db.models import Location, Fact
 from utils.logging import get_logger
@@ -175,3 +182,125 @@ async def get_facts(world_id: int):
     except Exception as e:
         logger.error("Failed to get facts", error=str(e), world_id=world_id)
         return jsonify({"error": "Internal server error"}), 500
+
+
+# ========== WIZARD ENDPOINTS ==========
+
+@world_building_routes.route('/wizard/start', methods=['POST'])
+async def wizard_start():
+    """
+    Start a wizard session for world building
+
+    Request body:
+        {
+            "world_id": 1
+        }
+
+    Returns:
+        200: Session started with first question
+        400: Validation error
+        404: World not found
+        500: Internal server error
+    """
+    try:
+        data = await request.get_json()
+        req = WizardStartRequest(**data)
+
+        db = next(get_db_session())
+        llm = current_app.llms.get('azure_one')
+        service = WizardOrchestrationService(db, llm)
+
+        response = await service.start_session(req.world_id)
+
+        return jsonify(response.dict()), 200
+
+    except ValidationError as e:
+        logger.warning("Validation error starting wizard", error=e.errors())
+        return jsonify({"error": "Validation error", "details": e.errors()}), 400
+    except ValueError as e:
+        logger.warning("World not found for wizard", error=str(e))
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        logger.error("Failed to start wizard", error=str(e))
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
+@world_building_routes.route('/wizard/respond', methods=['POST'])
+async def wizard_respond():
+    """
+    Respond to a wizard question
+
+    Request body:
+        {
+            "session_id": 1,
+            "response": "User's answer to the question..."
+        }
+
+    Returns:
+        200: Next question or completion status
+        400: Validation error
+        404: Session not found
+        500: Internal server error
+    """
+    try:
+        data = await request.get_json()
+        req = WizardResponseRequest(**data)
+
+        db = next(get_db_session())
+        llm = current_app.llms.get('azure_one')
+        service = WizardOrchestrationService(db, llm)
+
+        response = await service.respond(req.session_id, req.response)
+
+        return jsonify(response.dict()), 200
+
+    except ValidationError as e:
+        logger.warning("Validation error responding to wizard", error=e.errors())
+        return jsonify({"error": "Validation error", "details": e.errors()}), 400
+    except ValueError as e:
+        logger.warning("Wizard session error", error=str(e))
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        logger.error("Failed to process wizard response", error=str(e))
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
+
+@world_building_routes.route('/wizard/finalize', methods=['POST'])
+async def wizard_finalize():
+    """
+    Finalize world creation from wizard session
+
+    Creates all locations and facts, assigns PostGIS coordinates
+
+    Request body:
+        {
+            "session_id": 1
+        }
+
+    Returns:
+        200: World finalized successfully
+        400: Validation error or session not complete
+        404: Session not found
+        500: Internal server error
+    """
+    try:
+        data = await request.get_json()
+        req = WizardFinalizeRequest(**data)
+
+        db = next(get_db_session())
+        llm = current_app.llms.get('azure_one')
+        service = WizardOrchestrationService(db, llm)
+
+        response = await service.finalize(req.session_id)
+
+        return jsonify(response.dict()), 200
+
+    except ValidationError as e:
+        logger.warning("Validation error finalizing wizard", error=e.errors())
+        return jsonify({"error": "Validation error", "details": e.errors()}), 400
+    except ValueError as e:
+        logger.warning("Wizard finalization error", error=str(e))
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error("Failed to finalize wizard", error=str(e))
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500

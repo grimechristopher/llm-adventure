@@ -89,23 +89,36 @@ psql -U postgres
 CREATE DATABASE llm_adventure;
 \q
 
-# Install dependencies
+# Install dependencies (choose one method)
 cd api
+uv sync                      # Recommended - fast!
+# OR
 pip install -r requirements.txt
 
 # Configure environment
+cd api
 cp .env.example .env
-# Edit .env with PostgreSQL credentials
+# Edit .env with PostgreSQL credentials and LLM settings
+
+# Run database migrations (REQUIRED before first run)
+cd api
+alembic upgrade head
 ```
 
 ### Running the Application
 
 ```bash
-# From api directory
+# API Server
+cd api
 python run.py
+# Default: http://127.0.0.1:5000
 
-# Or with custom host/port via environment variables
+# Or with custom host/port
 HOST=0.0.0.0 PORT=8000 python run.py
+
+# CLI Client (in separate terminal)
+cd cli
+python adventure_cli.py
 ```
 
 ### Testing World Building Endpoints
@@ -128,11 +141,21 @@ curl -X POST http://127.0.0.1:5000/world-building/describe \
 # Connect to PostgreSQL
 psql -U postgres -d llm_adventure
 
-# Enable PostGIS (if not already enabled)
-CREATE EXTENSION IF NOT EXISTS postgis;
+# Create a new migration after modifying SQLAlchemy models
+cd api
+alembic revision --autogenerate -m "description of changes"
 
-# Tables are auto-created on application startup
-# See config/database.py:initialize_database()
+# Apply migrations
+alembic upgrade head
+
+# Rollback one migration
+alembic downgrade -1
+
+# View migration history
+alembic history
+
+# Check current migration version
+alembic current
 ```
 
 ## Development Patterns
@@ -196,22 +219,26 @@ validated = MyRequest(**data)
 
 ### Database Queries
 
-Connection management via `config/database.py`:
-```python
-from config.database import get_db_connection
-
-conn = get_db_connection()
-cursor = conn.cursor()
-cursor.execute("SELECT ...")
-```
-
-For world building data:
+**For world-building data (SQLAlchemy ORM):**
 ```python
 from config.orm_database import get_db_session
+from db.models import World, Location, Fact
 
 session = next(get_db_session())
 worlds = session.query(World).all()
+locations = session.query(Location).filter_by(world_id=1).all()
 ```
+
+**For raw SQL queries:**
+```python
+from config.orm_database import get_engine
+
+engine = get_engine()
+with engine.connect() as conn:
+    result = conn.execute(text("SELECT * FROM worlds"))
+```
+
+**IMPORTANT**: Use SQLAlchemy models in `db/models.py` for database operations, not raw psycopg. The old `config/database.py` has been removed in favor of `config/orm_database.py`.
 
 ## Design Philosophy
 
@@ -251,21 +278,116 @@ Facts have dynamic importance based on:
 - Facts below threshold (0.1) are candidates for cleanup
 - Prevents database bloat while preserving history
 
+## Project Structure
+
+```
+llm-adventure/
+├── api/                      # Backend API server
+│   ├── agents/              # LangChain agent implementations
+│   ├── config/              # Database, LLM configuration
+│   ├── db/                  # SQLAlchemy models and base
+│   ├── migrations/          # Alembic database migrations
+│   ├── models/              # Pydantic request/response models
+│   ├── routes/              # HTTP endpoint blueprints
+│   ├── services/            # Business logic layer
+│   ├── utils/               # Logging utilities
+│   ├── app.py               # Application factory
+│   ├── run.py               # Server entry point
+│   └── alembic.ini          # Alembic configuration
+├── cli/                     # Interactive CLI client
+│   ├── utils/               # Streaming utilities
+│   ├── adventure_cli.py     # Main CLI entry point
+│   ├── api_client.py        # HTTP client wrapper
+│   ├── config.py            # CLI configuration
+│   ├── display.py           # Rich console formatting
+│   ├── models.py            # Pydantic models
+│   └── state.py             # Session state management
+├── gdd/                     # Game Design Documents
+│   ├── Core Philosphy.md
+│   ├── Database Schema Design - World Space.md
+│   ├── Database Schema Design - Facts and Knowledge.md
+│   └── Gameplay - New Game.md
+└── CLAUDE.md                # This file
+```
+
 ## Key Files to Understand
 
-- `gdd/Core Philosphy.md`: Core game design principles
-- `gdd/Database Schema Design - World Space.md`: Detailed spatial schema design rationale
-- `gdd/Database Schema Design - Facts and Knowledge.md`: Complete epistemic system design
-- `api/app.py`: Application initialization and structure
-- `api/agents/world_builder.py`: LangChain world-building extraction agent
-- `api/config/database.py`: PostgreSQL connection management
-- `api/config/llm.py`: LLM registry and factory functions
+**Game Design & Philosophy:**
+- `gdd/Core Philosphy.md`: Fact-based knowledge system, imperfect information, temporal tracking
+- `gdd/Database Schema Design - World Space.md`: Spatial system, PostGIS integration, quarter-Earth planet
+- `gdd/Database Schema Design - Facts and Knowledge.md`: Epistemic layer, character knowledge divergence
 
-## Notes
+**World-Building System:**
+- `CHECKLIST_SYSTEM.md`: Configurable requirements checklist for world creation
+- `INTELLIGENT_WIZARD_EXAMPLE.md`: Vagueness detection and intelligent questioning
+- `CHECKLIST_IMPLEMENTATION_COMPLETE.md`: Complete implementation summary
 
-- Database tables are created automatically on application startup
-- World building data persists across sessions via PostgreSQL
-- The system uses soft deletes (`deleted_at`) to preserve historical data
-- PostGIS extension required for spatial queries
-- In-game time (BIGINT) is separate from real-world time (TIMESTAMP)
-- LangChain LCEL provides clean, composable agent pipelines
+**Backend Core:**
+- `api/app.py`: Quart application factory, startup hooks, blueprint registration
+- `api/config/llm.py`: LLM registry pattern - add new LLMs here
+- `api/config/orm_database.py`: SQLAlchemy session management (replaces old database.py)
+- `api/db/models.py`: SQLAlchemy ORM models (World, Location, Fact)
+
+**World Building System:**
+- `api/agents/world_builder.py`: LangChain LCEL chain for natural language → structured data
+- `api/services/world_building_service.py`: Business logic for world creation and LLM orchestration (includes wizard with checklist)
+- `api/services/checklist_evaluator.py`: Evaluates gathered data against configurable requirements
+- `api/config/world_requirements.py`: Configurable checklist - add/remove required fact types here
+- `api/routes/world_building.py`: REST API endpoints
+- `api/models/world_building.py`: Pydantic schemas for API contracts
+
+**Database Migrations:**
+- `api/migrations/env.py`: Alembic environment configuration
+- `api/migrations/versions/`: Individual migration scripts (numbered sequentially)
+
+**CLI Client:**
+- `cli/adventure_cli.py`: Rich-based interactive menu system
+- `cli/api_client.py`: Async HTTP client with error handling
+
+## Important Implementation Notes
+
+### Current MVP State
+The current implementation is a **world-building MVP** with:
+- ✅ Multi-world support
+- ✅ Natural language extraction (locations + facts)
+- ✅ Relative positioning (text-based, e.g., "north of Millbrook")
+- ✅ SQLAlchemy ORM + Alembic migrations
+- ✅ Service layer pattern
+- ✅ **Multi-question adaptive wizard** with intelligent vagueness detection
+- ✅ **Configurable checklist system** - developers can easily add/remove required fact types in `api/config/world_requirements.py`
+- ✅ **Automatic quality control** - LLM checks checklist between each response and asks follow-up questions until requirements satisfied
+
+**Not yet implemented** (see `api/IMPLEMENTATION_SUMMARY.md` for details):
+- ❌ Temporal tracking (history tables, valid_from/valid_to)
+- ❌ Character system and character knowledge
+- ❌ Path/movement system
+- ❌ Absolute PostGIS coordinates (constraint checking)
+- ❌ Fact relationships with semantic roles
+- ❌ FALSE facts (myths, legends, prophecies)
+
+### Database Schema Management
+- **Use Alembic migrations for all schema changes** - DO NOT modify tables directly
+- Models are in `db/models.py` (SQLAlchemy) and `models/world_building.py` (Pydantic)
+- The old `config/database.py` was removed; use `config/orm_database.py` instead
+- Migrations are auto-generated: `alembic revision --autogenerate -m "message"`
+
+### LLM Configuration
+- LLMs are registered in `config/llm.py` using the registry pattern
+- Supports both local (LM Studio) and cloud (Azure OpenAI) models
+- Configuration via environment variables in `.env`
+- Access in routes via `current_app.llms.get('llm_name')`
+
+### Service Layer Pattern
+The codebase follows strict separation of concerns:
+```
+Routes (HTTP) → Services (Business Logic) → Database (ORM/SQL)
+```
+- **Routes**: Handle HTTP requests, validation, responses only
+- **Services**: Contain business logic, LLM orchestration, transaction management
+- **Models**: SQLAlchemy for DB, Pydantic for API contracts
+
+### CLI Architecture
+- Rich console for beautiful terminal UI
+- Async HTTP client with proper error handling
+- State management tracks current world selection across menu navigation
+- Modular design: config, display, api_client, models, state

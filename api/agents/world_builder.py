@@ -26,7 +26,12 @@ from typing import Tuple
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.runnables import Runnable
-from models.world_building import WorldBuildingExtraction
+from models.world_building import (
+    WorldBuildingExtraction,
+    WizardQuestionResponse,
+    RelativePositionParse,
+    CompletionEvaluation
+)
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -227,3 +232,213 @@ def get_extraction_statistics(result: WorldBuildingExtraction) -> dict:
         stats["facts_linked_to_locations"] = sum(1 for fact in result.facts if fact.location_name)
     
     return stats
+
+
+# ========== WIZARD-SPECIFIC AGENTS ==========
+
+WIZARD_QUESTION_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", """You are a world-building wizard helping a user create a rich game world through conversation.
+
+Your goal is to ask engaging questions that naturally gather the information needed to build a comprehensive world.
+
+Current session state:
+- Stage: {stage}
+- Questions asked: {questions_asked}
+- Data gathered so far: {gathered_data}
+
+Your task: Analyze what information is missing and ask targeted questions to fill gaps. If the user gave vague responses, ask for specific details.
+
+== QUESTION STAGES ==
+
+1. **world_identity**: Core concept, genre, tone, scale
+   - Required: Genre, setting, key themes/conflicts
+   - Watch for vagueness: "fantasy world" → Ask about magic, technology, conflicts
+
+2. **locations**: Key places, geography, spatial relationships
+   - Required: 3-5 locations with spatial relationships
+   - Watch for vagueness: "a city somewhere" → Ask where relative to other places
+
+3. **culture**: Myths, legends, cultural beliefs
+   - Required: At least 2 cultural narratives
+   - Watch for vagueness: "some legends" → Ask what they're about specifically
+
+== DETECTING VAGUENESS ==
+
+If the user's last response was vague, ask clarifying questions:
+
+Examples:
+- User: "A fantasy world with magic"
+  → Ask: "How does magic work? Is it common or rare? What's the cost of using it?"
+
+- User: "There's a capital city"
+  → Ask: "Where is this capital located? What makes it the capital? Is it coastal, mountainous, or in a valley?"
+
+- User: "Some ancient legends"
+  → Ask: "Tell me about one of these legends. What does it explain about your world?"
+
+== OUTPUT FORMAT ==
+
+{format_instructions}
+
+== GUIDELINES ==
+
+- **Be specific when detecting vague answers** - Don't accept "magic exists" without details
+- **Ask follow-up questions** if critical information is missing
+- Build on previous answers for natural conversation flow
+- Use encouraging, creative language
+- Keep questions focused but probe for depth
+- Help users be specific without being pushy"""),
+    ("user", "What should I ask next?")
+])
+
+
+def create_wizard_question_chain(llm) -> Tuple[Runnable, PydanticOutputParser]:
+    """
+    Create chain for generating the next wizard question.
+
+    Args:
+        llm: Language model instance
+
+    Returns:
+        Tuple of (chain, parser) for wizard question generation
+    """
+    logger.info("Creating wizard question chain")
+
+    parser = PydanticOutputParser(pydantic_object=WizardQuestionResponse)
+
+    chain = (
+        WIZARD_QUESTION_PROMPT.partial(format_instructions=parser.get_format_instructions())
+        | llm
+        | parser
+    )
+
+    return chain, parser
+
+
+RELATIVE_POSITION_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", """Parse relative position text into structured format for coordinate mapping.
+
+Extract:
+- **reference_location_name**: Which location is this relative to?
+- **direction**: Cardinal or intercardinal direction (north, south, east, west, northeast, southeast, southwest, northwest)
+- **distance_qualifier**: How far? (very close, close, nearby, moderate distance, far, very far, across the world)
+- **additional_constraints**: Other spatial info (e.g., "coastal", "mountainous", "in a valley")
+
+Examples:
+
+Input: "far north of the Capital"
+Output: {{
+    "reference_location_name": "Capital",
+    "direction": "north",
+    "distance_qualifier": "far",
+    "additional_constraints": []
+}}
+
+Input: "on the coast, east of the mountains"
+Output: {{
+    "reference_location_name": "",
+    "direction": "east",
+    "distance_qualifier": "moderate distance",
+    "additional_constraints": ["coastal", "east of mountains"]
+}}
+
+Input: "between Millbrook and Ashford"
+Output: {{
+    "reference_location_name": "Millbrook",
+    "direction": "toward",
+    "distance_qualifier": "halfway",
+    "additional_constraints": ["toward Ashford", "midpoint"]
+}}
+
+{format_instructions}"""),
+    ("user", "Relative position: {relative_position}")
+])
+
+
+def create_relative_position_parser_chain(llm) -> Tuple[Runnable, PydanticOutputParser]:
+    """
+    Create chain for parsing relative position text into structured data.
+
+    Args:
+        llm: Language model instance
+
+    Returns:
+        Tuple of (chain, parser) for relative position parsing
+    """
+    logger.info("Creating relative position parser chain")
+
+    parser = PydanticOutputParser(pydantic_object=RelativePositionParse)
+
+    chain = (
+        RELATIVE_POSITION_PROMPT.partial(format_instructions=parser.get_format_instructions())
+        | llm
+        | parser
+    )
+
+    return chain, parser
+
+
+WIZARD_COMPLETION_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", """Evaluate whether we have enough information to create a playable game world.
+
+Current gathered data:
+{gathered_data}
+
+MINIMUM REQUIREMENTS:
+- Clear world identity (genre, tone, basic concept)
+  ❌ "fantasy world" is too vague
+  ✅ "high fantasy with unstable ancient magic, floating islands"
+
+- At least 3-5 distinct locations with spatial relationships
+  ❌ "capital city, forest, mountain" is too vague
+  ✅ "Skyreach capital at center, Frostpeak far north, Verdant jungle south"
+
+- Understanding of world rules (magic system OR technology level)
+  ❌ "magic exists" is too vague
+  ✅ "magic is rare, corrupting, reality-warping with cost"
+
+- Some cultural context (optional but valuable)
+  ❌ "some legends" is too vague
+  ✅ "Legend says dragons sleep beneath mountains, prophecy of sky falling"
+
+EVALUATION CRITERIA:
+- Is there enough SPECIFIC detail to create an interesting, coherent world?
+- Can a player understand the setting and navigate it?
+- Are the locations concrete with clear spatial relationships?
+- Do we understand how the world works (magic/tech rules)?
+- Are there enough narrative hooks for gameplay?
+
+QUALITY CHECKS:
+- Reject vague descriptions: "a world with magic" → Need details
+- Require spatial relationships: "a city" → Need "north of X" or "on the coast"
+- Demand specificity: "some legends" → Need actual legend content
+
+{format_instructions}
+
+Be STRICT about quality - vague information will result in boring, generic worlds.
+Better to ask one more question than proceed with insufficient detail."""),
+    ("user", "Is this enough information to finalize world creation?")
+])
+
+
+def create_wizard_completion_evaluator_chain(llm) -> Tuple[Runnable, PydanticOutputParser]:
+    """
+    Create chain for evaluating whether wizard has gathered enough information.
+
+    Args:
+        llm: Language model instance
+
+    Returns:
+        Tuple of (chain, parser) for completion evaluation
+    """
+    logger.info("Creating wizard completion evaluator chain")
+
+    parser = PydanticOutputParser(pydantic_object=CompletionEvaluation)
+
+    chain = (
+        WIZARD_COMPLETION_PROMPT.partial(format_instructions=parser.get_format_instructions())
+        | llm
+        | parser
+    )
+
+    return chain, parser
