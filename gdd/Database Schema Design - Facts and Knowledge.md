@@ -1121,6 +1121,380 @@ def prune_character_knowledge(character):
 
 ---
 
+## DeepAgent Workflows
+
+The epistemic engine leverages DeepAgents for autonomous reasoning about facts, knowledge, and belief evolution. Here's how agents integrate with the database schema:
+
+### Fact Decomposition Workflow
+
+**Agent**: `fact_decomposition_agent.py`
+
+**Input**: Natural language description
+```
+"Alice gave Bob a sword in the tavern after defeating the bandits"
+```
+
+**Agent Process**:
+1. Parse text → identify atomic propositions
+2. For each fact:
+   - Determine `canonical_truth` (TRUE/FALSE)
+   - Assign `fact_category` (observed, historical, myth, etc.)
+   - Extract `what_type` (combat, transfer, etc.)
+   - Write `why_context` with causal explanation
+3. Create `FactRelationships` with semantic roles
+4. Use `validate_fact_consistency` tool to check contradictions
+
+**Database Output**:
+```sql
+-- Fact 1
+INSERT INTO facts (content, fact_category, canonical_truth, what_type, when_occurred)
+VALUES ('Alice defeated the bandit group', 'observed', TRUE, 'combat', <timestamp>);
+
+INSERT INTO fact_relationships (fact_id, related_entity_type, related_entity_id, role)
+VALUES
+  (<fact1_id>, 'character', <alice_id>, 'attacker'),
+  (<fact1_id>, 'character', <bandit_id>, 'victim');
+
+-- Fact 2
+INSERT INTO facts (content, fact_category, canonical_truth, what_type)
+VALUES ('Alice gave Bob a sword', 'observed', TRUE, 'transfer');
+
+INSERT INTO fact_relationships (fact_id, related_entity_type, related_entity_id, role)
+VALUES
+  (<fact2_id>, 'character', <alice_id>, 'giver'),
+  (<fact2_id>, 'character', <bob_id>, 'receiver'),
+  (<fact2_id>, 'item', <sword_id>, 'gift'),
+  (<fact2_id>, 'location', <tavern_id>, 'scene');
+```
+
+---
+
+### Knowledge Evolution Workflow
+
+**Agent**: `knowledge_evolution_agent.py`
+
+**Scenario**: Character learns new information that contradicts existing belief
+
+**Agent Process**:
+1. Query existing knowledge: `SELECT * FROM character_knowledge WHERE character_id = X AND fact_id = Y AND is_current = TRUE`
+2. Evaluate source reliability (witness > told_by > rumor > memory)
+3. Compare new vs. old information
+4. Calculate new `belief_strength` based on source + character personality
+5. Determine if `distortion_type` applies (based on character biases)
+6. Create supersession chain
+
+**Database Output**:
+```sql
+-- Mark old knowledge as superseded
+UPDATE character_knowledge
+SET is_current = FALSE,
+    superseded_by_knowledge_id = <new_knowledge_id>,
+    superseded_at = <current_game_time>
+WHERE id = <old_knowledge_id>;
+
+-- Create new knowledge version
+INSERT INTO character_knowledge (
+  character_id, fact_id, knowledge_version, is_current,
+  belief_strength, learned_from_type, personal_context
+)
+VALUES (
+  <character_id>, <fact_id>, 2, TRUE,
+  0.9, 'witness', 'I saw it with my own eyes'
+);
+```
+
+**Result**: Character knowledge version chain preserved:
+- Version 1 (superseded): "Pass is safe" (rumor, belief=0.6)
+- Version 2 (current): "Pass is blocked" (witness, belief=1.0)
+
+---
+
+### Rumor Propagation Workflow
+
+**Agent**: `rumor_propagation_agent.py`
+
+**Scenario**: Information spreads through social network A→B→C→D with degradation
+
+**Agent Process**:
+1. Get source knowledge (must have `will_share = TRUE`)
+2. For each target in propagation list:
+   - Calculate `belief_strength = source_belief - (decay_factor * hop_count)`
+   - Roll distortion probability (increases with hops)
+   - Determine `distortion_type` based on character personality
+   - Create `CharacterKnowledge` with `learned_from_character_id` chain
+
+**Database Output**:
+```sql
+-- Hop 1: A→B (30% distortion chance)
+INSERT INTO character_knowledge (
+  character_id, fact_id, belief_strength,
+  learned_from_type, learned_from_character_id,
+  distortion_type, personal_context
+)
+VALUES (
+  <B_id>, <fact_id>, 0.9,
+  'told_by', <A_id>,
+  NULL, 'A told me directly'
+);
+
+-- Hop 2: B→C (45% distortion chance, distortion occurred)
+INSERT INTO character_knowledge (
+  character_id, fact_id, belief_strength,
+  learned_from_type, learned_from_character_id,
+  distortion_type, personal_context
+)
+VALUES (
+  <C_id>, <fact_id>, 0.8,
+  'told_by', <B_id>,
+  'embellished', 'Heard it was an emergency meeting, not just a regular one'
+);
+
+-- Hop 3: C→D (60% distortion chance, detail lost)
+INSERT INTO character_knowledge (
+  character_id, fact_id, belief_strength,
+  learned_from_type, learned_from_character_id,
+  distortion_type, personal_context
+)
+VALUES (
+  <D_id>, <fact_id>, 0.7,
+  'rumor', <C_id>,
+  'partial', 'Something about a meeting tonight, not sure when exactly'
+);
+```
+
+**Result**: Emergent "telephone game" with believable information degradation.
+
+---
+
+### Temporal State Coordination Workflow
+
+**Agent**: `temporal_state_coordinator.py`
+
+**Scenario**: Millbrook grows from village (Year 1000) to city (Year 1050)
+
+**Agent Process**:
+1. Close current LocationHistory: `UPDATE location_history SET valid_to = 1050 WHERE location_id = X AND valid_to IS NULL`
+2. Create new LocationHistory snapshot with updated population, description
+3. Find Facts referencing old LocationHistory
+4. Create FactHistory preserving old snapshots
+5. Update current Facts to reference new LocationHistory (if fact still true) OR create superseding facts
+6. Identify CharacterKnowledge referencing outdated FactHistory
+7. Log characters with outdated knowledge (DO NOT auto-update - drives gameplay)
+
+**Database Output**:
+```sql
+-- 1. Close old location snapshot
+UPDATE location_history
+SET valid_to = 1050
+WHERE location_id = <millbrook_id> AND valid_to IS NULL;
+
+-- 2. Create new location snapshot
+INSERT INTO location_history (
+  location_id, name, population, description,
+  valid_from, valid_to
+)
+VALUES (
+  <millbrook_id>, 'Millbrook', 12000, 'A bustling city with high walls...',
+  1050, NULL
+);
+
+-- 3. Archive old fact
+INSERT INTO fact_history (
+  fact_id, content, where_location_history_id,
+  valid_from, valid_to, change_reason
+)
+VALUES (
+  <fact_id>, 'Millbrook is a quiet village',
+  <old_location_history_id>,
+  1000, 1050, 'Village grew into city due to trade boom'
+);
+
+-- 4. Create superseding fact
+UPDATE facts
+SET superseded_by_fact_id = <new_fact_id>,
+    superseded_at = 1050
+WHERE id = <old_fact_id>;
+
+INSERT INTO facts (
+  content, where_location_history_id, fact_category, canonical_truth
+)
+VALUES (
+  'Millbrook is a thriving city of 12,000 people',
+  <new_location_history_id>, 'current_state', TRUE
+);
+
+-- 5. Character knowledge remains pointing to old FactHistory (outdated!)
+-- Query to find affected characters:
+SELECT DISTINCT ck.character_id
+FROM character_knowledge ck
+JOIN facts f ON ck.fact_id = f.id
+WHERE f.id = <old_fact_id> AND ck.is_current = TRUE;
+```
+
+**Result**:
+- World state updated with historical continuity
+- Facts preserve temporal snapshots
+- Characters with outdated knowledge identified for gameplay opportunities
+- Agent suggests discovery events: "Character X should visit Millbrook and be surprised"
+
+---
+
+### Myth Creation Workflow
+
+**Agent**: `myth_creation_agent.py`
+
+**Scenario**: Create regional myth about mountain
+
+**Agent Process**:
+1. Determine appropriate `fact_category` (myth, legend, prophecy, conspiracy, etc.)
+2. Identify creator character (elder shaman, priest, bard, conspiracy leader)
+3. Write compelling `content` (not generic)
+4. Explain `why_context` (cultural origin and purpose)
+5. Optionally link to TRUE facts (legends based on real events)
+6. Ensure database constraints satisfied:
+   - `canonical_truth = FALSE`
+   - `created_by_character_id NOT NULL`
+   - Category matches FALSE categories
+
+**Database Output**:
+```sql
+INSERT INTO facts (
+  content, fact_category, canonical_truth,
+  created_by_character_id, why_context, what_type
+)
+VALUES (
+  'The Dragon God Kethraxi sleeps beneath Frostpeak Mountain, and her dreams shape the winter storms',
+  'myth', FALSE,
+  <elder_shaman_id>,
+  'This myth arose to explain the unusual severity and unpredictability of storms near Frostpeak. The elder shamans formalized it into religious doctrine 300 years ago.',
+  'religious'
+);
+
+-- Relationship to location
+INSERT INTO fact_relationships (fact_id, related_entity_type, related_entity_id, role)
+VALUES (<myth_fact_id>, 'location', <frostpeak_id>, 'scene');
+
+-- 200 NPCs now believe this myth
+INSERT INTO character_knowledge (character_id, fact_id, belief_strength, learned_from_type)
+SELECT id, <myth_fact_id>, 0.95, 'cultural'
+FROM characters
+WHERE region = 'Northern Mountains';
+```
+
+**Result**: Shared cultural narrative with proper constraints, spread among regional population.
+
+---
+
+### Character Belief Reasoning Workflow
+
+**Agent**: `character_belief_agent.py`
+
+**Scenario**: Determine if character accepts new information
+
+**Agent Process**:
+1. Get character's existing knowledge on topic
+2. Analyze personality traits (skeptical, gullible, biased, logical, dramatic, paranoid)
+3. Evaluate source reliability and trust relationship
+4. Check for contradictions with existing beliefs
+5. Determine: accept, reject, or distort
+6. Calculate `belief_strength` based on source quality + personality
+7. Apply `distortion_type` if personality biases affect interpretation
+8. Decide if supersession needed
+
+**Example - Skeptical Character**:
+```sql
+-- Input: Rumor about dragon (low reliability source)
+-- Character personality: Skeptical
+
+-- Agent decision: Accept with low belief, minimize distortion
+INSERT INTO character_knowledge (
+  character_id, fact_id, belief_strength,
+  learned_from_type, distortion_type, personal_context
+)
+VALUES (
+  <skeptic_id>, <dragon_fact_id>, 0.2,
+  'rumor', 'minimized',
+  'Probably just a large lizard someone saw. People exaggerate.'
+);
+```
+
+**Example - Gullible Character**:
+```sql
+-- Same input: Rumor about dragon
+-- Character personality: Gullible
+
+-- Agent decision: Accept with high belief, possible embellishment
+INSERT INTO character_knowledge (
+  character_id, fact_id, belief_strength,
+  learned_from_type, distortion_type, personal_context
+)
+VALUES (
+  <gullible_id>, <dragon_fact_id>, 0.8,
+  'rumor', 'embellished',
+  'Not just any dragon - a HUGE one! They say it destroyed entire villages!'
+);
+```
+
+**Result**: Same fact, two characters, vastly different beliefs - driven by personality simulation.
+
+---
+
+### Game Master Narrative Generation Workflow
+
+**Agent**: `game_master_agent.py`
+
+**Scenario**: Player asks NPC about Millbrook
+
+**Agent Process**:
+1. Identify speaking character
+2. Query `character_knowledge` for that character's beliefs about Millbrook
+3. Check `belief_strength` (affects confidence in speech)
+4. Check `distortion_type` (affects description accuracy)
+5. Check if `fact_history_id` points to outdated snapshot
+6. Generate NPC dialogue reflecting THEIR knowledge
+7. Generate GM narration revealing knowledge divergence
+
+**Database Query**:
+```sql
+SELECT
+  ck.belief_strength,
+  ck.distortion_type,
+  ck.personal_context,
+  f.content,
+  fh.content as historical_content,
+  fh.valid_to as fact_outdated_at
+FROM character_knowledge ck
+JOIN facts f ON ck.fact_id = f.id
+LEFT JOIN fact_history fh ON ck.fact_history_id = fh.id
+WHERE ck.character_id = <npc_id>
+  AND f.id IN (SELECT fact_id FROM fact_relationships
+               WHERE related_entity_type = 'location'
+               AND related_entity_id = <millbrook_id>)
+  AND ck.is_current = TRUE
+  AND ck.deleted_at IS NULL;
+```
+
+**Agent Output**:
+```json
+{
+  "npc_dialogue": "Millbrook? Oh yes, peaceful little village. Good place to rest for the night. I was there about... oh, 20 years ago now. Lovely quiet spot.",
+  "narration": "As you approach Millbrook, you're surprised to find high stone walls and the bustle of a major city. Guard towers flank the gates, and merchant stalls line crowded streets. It seems much has changed since your informant last visited.",
+  "knowledge_used": [
+    {
+      "fact_id": 142,
+      "belief_strength": 1.0,
+      "is_outdated": true,
+      "historical_content": "Millbrook is a quiet village",
+      "current_reality": "Millbrook is a thriving city"
+    }
+  ]
+}
+```
+
+**Result**: Narrative reveals knowledge divergence organically, creating discovery moment for player.
+
+---
+
 ## Design Principles Summary
 
 **1. Epistemological Integrity**

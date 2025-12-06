@@ -79,6 +79,85 @@ The world exists on a spherical planet (quarter-Earth size) using:
 - Fact queries → Filtered by character knowledge and belief strength
 - Location descriptions → Rich narrative text fields
 
+### DeepAgents Architecture (Phase 2)
+
+**Phase 2 Integration** (COMPLETED): Replaced hardcoded dictionary-based spatial reasoning with LangChain DeepAgents for extended multi-step reasoning.
+
+**Key Components**:
+- `agents/spatial_planner_agent.py`: DeepAgent for complex spatial constraint resolution
+- `tools/spatial_calculator.py`: 9 PostGIS tools (3 from Phase 1, 6 new in Phase 2)
+- `tools/world_query.py`: Database query tools for agent context gathering
+- `services/coordinate_mapper.py`: Integrated with DeepAgent (replaced dictionaries)
+
+**What Changed in Phase 2**:
+1. **Removed hardcoded dictionaries**: DISTANCE_QUALIFIERS and DIRECTION_BEARINGS replaced with agent reasoning
+2. **6 New Spatial Tools**:
+   - `calculate_midpoint`: For "between A and B" constraints using ST_Centroid
+   - `calculate_centroid_of_locations`: For "equidistant from A, B, C" using ST_Collect
+   - `validate_bearing_constraint`: Directional validation with ±45° tolerance
+   - `validate_distance_constraint`: Distance validation with configurable tolerance
+   - `find_nearby_locations`: Radius search using ST_DWithin for isolation checks
+   - `project_from_point`: Bearing/distance projection using ST_Project
+3. **Spatial Planner Agent**: Extended reasoning for multi-constraint scenarios
+   - Distance interpretation guide (qualitative → quantitative, travel time → distance)
+   - 5-step reasoning process (parse → gather → propose → validate → iterate)
+   - Structured JSON output with validation results and confidence levels
+   - No silent defaults - raises exceptions on failure instead of returning (0,0)
+
+**Tool Collections** (`tools/__init__.py`):
+```python
+SPATIAL_REASONING_TOOLS = [
+    query_world_locations,      # Phase 1
+    calculate_distance,          # Phase 1
+    calculate_bearing,           # Phase 1
+    find_coordinates_for_constraints,  # Phase 1
+    # Phase 2 tools:
+    calculate_midpoint,
+    calculate_centroid_of_locations,
+    validate_bearing_constraint,
+    validate_distance_constraint,
+    find_nearby_locations,
+    project_from_point
+]
+```
+
+**Example Agent Usage**:
+```python
+from agents.spatial_planner_agent import create_spatial_planner_agent
+
+agent = create_spatial_planner_agent()
+result = agent.invoke({
+    "messages": [{
+        "role": "user",
+        "content": """Find coordinates for location 'Port Town'.
+
+**Constraint Description**: between Millbrook and Ashford, near the eastern coast, 2 days travel from Capital
+
+Use tools to calculate and validate coordinates."""
+    }]
+})
+
+# Agent uses tools to:
+# 1. Query world locations
+# 2. Calculate midpoint (between constraint)
+# 3. Validate bearing and distance
+# 4. Return JSON with coordinates and validation
+```
+
+**Testing** (Phase 2):
+- `tests/test_spatial_tools.py`: Unit tests for 6 new tools
+- `tests/test_spatial_planner_agent.py`: Agent integration tests
+- `tests/test_coordinate_mapper_integration.py`: End-to-end tests with 20+ constraint patterns
+
+**Constraint Patterns Supported**:
+- Single reference: "78km northeast of Millbrook"
+- Between two: "between A and B"
+- Equidistant: "equidistant from A, B, C"
+- Qualitative distance: "nearby", "far from", "very close"
+- Travel time: "2 days travel", "half day walk"
+- Directional qualifiers: "directly north", "generally northeast"
+- Complex multi-constraint: "between A and B, near coast, far from mountains"
+
 ## Common Commands
 
 ### Initial Setup
