@@ -30,31 +30,9 @@ from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Distance qualifiers mapped to kilometers
-DISTANCE_QUALIFIERS = {
-    "very close": 5,
-    "close": 15,
-    "nearby": 25,
-    "moderate distance": 50,
-    "moderate": 50,
-    "far": 150,
-    "very far": 300,
-    "across the world": 1500,
-    "halfway": None,  # Special case - calculated as midpoint
-}
-
-# Direction bearings in degrees (0 = north, 90 = east, etc.)
-DIRECTION_BEARINGS = {
-    "north": 0,
-    "northeast": 45,
-    "east": 90,
-    "southeast": 135,
-    "south": 180,
-    "southwest": 225,
-    "west": 270,
-    "northwest": 315,
-    "toward": None,  # Special case - calculated bearing toward reference
-}
+# NOTE: Hardcoded dictionaries removed in Phase 2 - DeepAgent integration
+# Previous DISTANCE_QUALIFIERS and DIRECTION_BEARINGS replaced with
+# spatial_planner_agent.py which uses extended reasoning instead of lookups
 
 
 class CoordinateMapperService:
@@ -245,8 +223,8 @@ class CoordinateMapperService:
                     "relative_position": loc.relative_position
                 })
 
-                # Calculate coordinates based on parsed data
-                coords = await self._calculate_coordinates_from_parse(parsed, all_locations)
+                # Calculate coordinates using DeepAgent (Phase 2)
+                coords = await self._calculate_coordinates_from_parse(loc, parsed, all_locations)
 
                 if coords:
                     lat, lon = coords
@@ -269,78 +247,95 @@ class CoordinateMapperService:
 
     async def _calculate_coordinates_from_parse(
         self,
+        location: Location,
         parsed: RelativePositionParse,
         all_locations: List[Location]
     ) -> Optional[Tuple[float, float]]:
         """
-        Calculate coordinates from parsed relative position using PostGIS.
+        Calculate coordinates using DeepAgent spatial reasoning.
+
+        CLEAN REPLACEMENT - No fallback to old dictionary logic.
+        Phase 2: Uses spatial_planner_agent instead of hardcoded dictionaries.
 
         Args:
-            parsed: Parsed relative position data
+            location: Location object with relative_position text
+            parsed: Parsed relative position data (may be used for fallback in future)
             all_locations: All locations for reference lookup
 
         Returns:
             Tuple of (latitude, longitude) or None if calculation fails
         """
-        # Find reference location
-        ref_loc = None
-        if parsed.reference_location_name:
-            ref_loc = next(
-                (loc for loc in all_locations
-                 if loc.name.lower() == parsed.reference_location_name.lower()),
-                None
+        from agents.spatial_planner_agent import create_spatial_planner_agent
+        import json
+
+        # Create agent
+        agent = create_spatial_planner_agent()
+
+        # Invoke agent with full relative_position context
+        result = agent.invoke({
+            "messages": [{
+                "role": "user",
+                "content": f"""Find coordinates for location '{location.name}'.
+
+**Constraint Description**: {location.relative_position}
+
+**World ID**: {location.world_id}
+
+**Instructions**:
+1. Use query_world_locations to see existing locations
+2. Parse all constraints from the description
+3. Use calculation tools to propose coordinates
+4. Use validation tools to verify all constraints
+5. Return JSON with proposed_lat, proposed_lon, and validation results
+"""
+            }]
+        })
+
+        # Parse agent's response
+        final_message = result['messages'][-1]['content']
+
+        # Extract JSON from agent response
+        try:
+            # Agent should return JSON, but might wrap it in markdown
+            if '```json' in final_message:
+                json_str = final_message.split('```json')[1].split('```')[0].strip()
+            elif '```' in final_message:
+                json_str = final_message.split('```')[1].split('```')[0].strip()
+            else:
+                json_str = final_message.strip()
+
+            agent_output = json.loads(json_str)
+
+            lat = float(agent_output['proposed_lat'])
+            lon = float(agent_output['proposed_lon'])
+
+            # Validate coordinates are in bounds
+            if not (-40 <= lat <= 40):
+                raise ValueError(f"Latitude {lat} outside valid range [-40, 40]")
+            if not (-180 <= lon <= 180):
+                raise ValueError(f"Longitude {lon} outside valid range [-180, 180]")
+
+            # Log agent reasoning for debugging
+            logger.info(
+                "Spatial planner agent result",
+                location=location.name,
+                coordinates={"lat": lat, "lon": lon},
+                confidence=agent_output.get('confidence', 'unknown'),
+                constraints_satisfied=[
+                    v['constraint'] for v in agent_output.get('validation_results', [])
+                    if v.get('satisfied', False)
+                ]
             )
-
-        if not ref_loc or not ref_loc.coordinates:
-            # No reference location - use origin
-            ref_lat, ref_lon = 0.0, 0.0
-        else:
-            # Extract lat/lon from reference location's coordinates
-            ref_lat, ref_lon = self._extract_lat_lon_from_geography(ref_loc.coordinates)
-
-        # Get distance in kilometers
-        distance_km = DISTANCE_QUALIFIERS.get(parsed.distance_qualifier.lower(), 50)
-
-        if distance_km is None:
-            # Special case: halfway or toward - use midpoint or default
-            distance_km = 50
-
-        # Get bearing in degrees
-        bearing = DIRECTION_BEARINGS.get(parsed.direction.lower(), 0)
-
-        if bearing is None:
-            # Special case: toward - calculate bearing
-            bearing = 0
-
-        # Use PostGIS ST_Project to calculate new coordinates
-        # ST_Project expects: geography, distance_meters, azimuth_radians
-        distance_meters = distance_km * 1000
-        azimuth_radians = math.radians(bearing)
-
-        # Execute PostGIS query
-        result = self.db.execute(
-            text("""
-                SELECT
-                    ST_Y(ST_Project(:geog::geography, :dist, :azimuth)::geometry) as lat,
-                    ST_X(ST_Project(:geog::geography, :dist, :azimuth)::geometry) as lon
-            """),
-            {
-                "geog": f'SRID=4326;POINT({ref_lon} {ref_lat})',
-                "dist": distance_meters,
-                "azimuth": azimuth_radians
-            }
-        ).fetchone()
-
-        if result:
-            lat, lon = result.lat, result.lon
-
-            # Enforce quarter-Earth bounds
-            lat = max(-40, min(40, lat))
-            lon = max(-40, min(40, lon))
 
             return lat, lon
 
-        return None
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            logger.error(
+                "Failed to parse spatial planner output",
+                error=str(e),
+                agent_output=final_message[:500]
+            )
+            raise ValueError(f"Spatial planner agent did not return valid coordinates: {e}")
 
     def _extract_lat_lon_from_geography(self, geography) -> Tuple[float, float]:
         """
