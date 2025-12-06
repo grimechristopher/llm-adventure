@@ -135,7 +135,15 @@ class WizardExtractionResult(BaseModel):
 
 
 class CompletionEvaluation(BaseModel):
-    """LLM evaluation of whether wizard has enough information"""
+    """
+    DeepAgent evaluation of whether wizard has enough information.
+
+    Used by wizard_completion_agent to provide structured reasoning about
+    world-building quality and completeness.
+    """
     is_complete: bool
-    missing_elements: List[str] = Field(default_factory=list)
+    reasoning: str  # Step-by-step analysis of gathered data
+    missing_elements: List[str] = Field(default_factory=list)  # Specific gaps identified
+    vague_responses_detected: List[str] = Field(default_factory=list)  # Examples of insufficient detail
+    quality_score: float = Field(ge=0.0, le=1.0, default=0.0)  # Overall quality rating
     next_question_suggestion: Optional[str] = None
