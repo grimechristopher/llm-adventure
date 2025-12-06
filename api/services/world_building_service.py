@@ -16,9 +16,9 @@ from models.world_building import (
 )
 from agents.world_builder import (
     create_world_builder_chain,
-    create_wizard_question_chain,
-    create_wizard_completion_evaluator_chain
+    create_wizard_question_chain
 )
+from agents.wizard_completion_agent import create_wizard_completion_agent, completion_parser
 from services.coordinate_mapper import CoordinateMapperService
 from services.checklist_evaluator import ChecklistEvaluator
 from utils.logging import get_logger
@@ -184,9 +184,9 @@ class WizardOrchestrationService:
         self.llm = llm
         self.extraction_chain, _ = create_world_builder_chain(llm)
         self.question_chain, _ = create_wizard_question_chain(llm)
-        self.completion_chain, _ = create_wizard_completion_evaluator_chain(llm)
+        self.completion_agent = create_wizard_completion_agent()  # DeepAgent for quality evaluation
         self.checklist_evaluator = ChecklistEvaluator()
-        logger.info("WizardOrchestrationService initialized")
+        logger.info("WizardOrchestrationService initialized with DeepAgent completion evaluator")
 
     async def start_session(self, world_id: int) -> WizardStartResponse:
         """
@@ -451,22 +451,20 @@ class WizardOrchestrationService:
 
     async def _is_stage_complete(self, session: WorldGenerationSession) -> bool:
         """
-        Determine if current stage has enough information using checklist evaluation.
+        Determine if current stage has enough information using DeepAgent.
 
-        Uses the configurable checklist to verify all required information has been
-        gathered with sufficient detail. This handles vague responses by checking
-        both quantity and quality of gathered data.
+        MIGRATION: Replaced simple LLM call with DeepAgent extended reasoning.
+        Uses checklist evaluation as fast path, then DeepAgent for deep quality verification.
 
         Args:
             session: Current wizard session
 
         Returns:
-            True if stage is complete (all checklist items satisfied)
+            True if stage is complete (all checklist items satisfied with quality)
         """
         # Get latest checklist evaluation (already computed after user response)
         checklist_evals = session.gathered_data.get('checklist_evaluations', [])
         if not checklist_evals:
-            # No evaluation yet - shouldn't happen but fallback to false
             logger.warning("No checklist evaluation found, defaulting to incomplete")
             return False
 
@@ -482,26 +480,60 @@ class WizardOrchestrationService:
                     satisfied=len(latest_eval['satisfied_requirements']),
                     missing=len(latest_eval['missing_requirements']))
 
-        # If checklist says incomplete, use LLM as secondary check for quality
+        # If checklist says incomplete, trust it (fast path)
         if not overall_complete:
             return False
 
-        # Checklist complete - use LLM to verify quality
-        try:
-            evaluation = await self.completion_chain.ainvoke({
-                "gathered_data": str(session.gathered_data)
-            })
+        # Checklist complete - use DeepAgent for deep quality verification
+        # Invoke agent with world context
+        result = self.completion_agent.invoke({
+            "messages": [{
+                "role": "user",
+                "content": f"""Evaluate if this world-building session is complete.
 
-            logger.info("LLM quality verification",
+World ID: {session.world_id}
+Current Stage: {session.session_stage}
+
+Gathered Data Summary:
+- Locations: {len(session.gathered_data.get('locations', []))}
+- Facts: {len(session.gathered_data.get('facts', []))}
+
+Checklist Status: All requirements quantitatively satisfied
+Your Task: Use tools to verify QUALITY, detect vagueness, ensure coherence
+
+Invoke query_world_facts and query_world_locations to analyze gathered data.
+Return structured JSON with your evaluation."""
+            }]
+        })
+
+        # Parse agent's final response as structured JSON
+        final_message = result['messages'][-1]['content']
+
+        try:
+            # Parse structured response using Pydantic
+            evaluation = completion_parser.parse(final_message)
+
+            logger.info("DeepAgent quality verification",
                         is_complete=evaluation.is_complete,
-                        missing_elements=evaluation.missing_elements)
+                        quality_score=evaluation.quality_score,
+                        missing_count=len(evaluation.missing_elements),
+                        vague_count=len(evaluation.vague_responses_detected))
+
+            # Store evaluation in session for debugging
+            if 'deepagent_evaluations' not in session.gathered_data:
+                session.gathered_data['deepagent_evaluations'] = []
+            session.gathered_data['deepagent_evaluations'].append({
+                'timestamp': datetime.utcnow().isoformat(),
+                'evaluation': evaluation.dict()
+            })
+            self.db.commit()
 
             return evaluation.is_complete
 
         except Exception as e:
-            logger.error("Failed LLM quality verification, trusting checklist", error=str(e))
-            # Trust checklist if LLM fails
-            return overall_complete
+            logger.error("Failed to parse DeepAgent response", error=str(e), raw_response=final_message[:500])
+            # Fallback: if we can't parse, assume incomplete (safer default)
+            return False
 
     def _advance_stage(self, session: WorldGenerationSession) -> str:
         """

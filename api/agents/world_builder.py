@@ -29,8 +29,7 @@ from langchain_core.runnables import Runnable
 from models.world_building import (
     WorldBuildingExtraction,
     WizardQuestionResponse,
-    RelativePositionParse,
-    CompletionEvaluation
+    RelativePositionParse
 )
 from utils.logging import get_logger
 
@@ -378,67 +377,6 @@ def create_relative_position_parser_chain(llm) -> Tuple[Runnable, PydanticOutput
     return chain, parser
 
 
-WIZARD_COMPLETION_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """Evaluate whether we have enough information to create a playable game world.
-
-Current gathered data:
-{gathered_data}
-
-MINIMUM REQUIREMENTS:
-- Clear world identity (genre, tone, basic concept)
-  ❌ "fantasy world" is too vague
-  ✅ "high fantasy with unstable ancient magic, floating islands"
-
-- At least 3-5 distinct locations with spatial relationships
-  ❌ "capital city, forest, mountain" is too vague
-  ✅ "Skyreach capital at center, Frostpeak far north, Verdant jungle south"
-
-- Understanding of world rules (magic system OR technology level)
-  ❌ "magic exists" is too vague
-  ✅ "magic is rare, corrupting, reality-warping with cost"
-
-- Some cultural context (optional but valuable)
-  ❌ "some legends" is too vague
-  ✅ "Legend says dragons sleep beneath mountains, prophecy of sky falling"
-
-EVALUATION CRITERIA:
-- Is there enough SPECIFIC detail to create an interesting, coherent world?
-- Can a player understand the setting and navigate it?
-- Are the locations concrete with clear spatial relationships?
-- Do we understand how the world works (magic/tech rules)?
-- Are there enough narrative hooks for gameplay?
-
-QUALITY CHECKS:
-- Reject vague descriptions: "a world with magic" → Need details
-- Require spatial relationships: "a city" → Need "north of X" or "on the coast"
-- Demand specificity: "some legends" → Need actual legend content
-
-{format_instructions}
-
-Be STRICT about quality - vague information will result in boring, generic worlds.
-Better to ask one more question than proceed with insufficient detail."""),
-    ("user", "Is this enough information to finalize world creation?")
-])
-
-
-def create_wizard_completion_evaluator_chain(llm) -> Tuple[Runnable, PydanticOutputParser]:
-    """
-    Create chain for evaluating whether wizard has gathered enough information.
-
-    Args:
-        llm: Language model instance
-
-    Returns:
-        Tuple of (chain, parser) for completion evaluation
-    """
-    logger.info("Creating wizard completion evaluator chain")
-
-    parser = PydanticOutputParser(pydantic_object=CompletionEvaluation)
-
-    chain = (
-        WIZARD_COMPLETION_PROMPT.partial(format_instructions=parser.get_format_instructions())
-        | llm
-        | parser
-    )
-
-    return chain, parser
+# NOTE: Wizard completion evaluation has been moved to agents/wizard_completion_agent.py
+# which uses DeepAgent for extended reasoning with tool use.
+# The basic LCEL chain below was replaced to improve quality detection.
