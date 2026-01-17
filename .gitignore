@@ -1,6 +1,7 @@
 /.venv
 api/.venv
 .env
+.worktrees/
 
 # Ignore log files and Python cache
 *.log
