@@ -44,17 +44,20 @@ def register_core_tools(registry: ToolRegistry) -> None:
     logger.info("core_tools_registered", total=11)
 
 
-def register_plugins(registry: PluginRegistry) -> None:
+def register_plugins(registry: PluginRegistry, llm=None, tools=None) -> None:
     """
     Register all plugins in the plugin registry
 
     Args:
         registry: PluginRegistry instance to register plugins in
+        llm: Optional LLM instance for plugins that need it
+        tools: Optional list of tools for plugins that need them
     """
     logger.info("registering_plugins")
 
     # Import plugins
     from plugins.world_builder_plugin import WorldBuilderPlugin
+    from plugins.conversation_plugin import ConversationPlugin
 
     # Register world builder plugin
     world_builder = WorldBuilderPlugin()
@@ -64,4 +67,18 @@ def register_plugins(registry: PluginRegistry) -> None:
                graphs=len(world_builder.graphs),
                tools=len(world_builder.tools))
 
-    logger.info("plugins_registered", total=1)
+    # Register conversation plugin
+    conversation = ConversationPlugin()
+
+    # Initialize with LLM and tools if provided
+    if llm is not None and tools is not None:
+        conversation.initialize_with_llm_and_tools(llm, tools)
+        logger.info("conversation_plugin_initialized_with_llm_and_tools")
+
+    registry.register(conversation)
+    logger.info("registered_plugin",
+               name=conversation.name,
+               graphs=len(conversation.graphs),
+               tools=len(conversation.tools))
+
+    logger.info("plugins_registered", total=2)
