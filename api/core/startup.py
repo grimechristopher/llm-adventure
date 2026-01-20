@@ -2,6 +2,7 @@
 """Startup initialization for core components"""
 
 from core.tool_registry import ToolRegistry
+from core.plugin_registry import PluginRegistry
 from core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -41,3 +42,26 @@ def register_core_tools(registry: ToolRegistry) -> None:
     logger.info("registered_file_tools", count=4)
 
     logger.info("core_tools_registered", total=11)
+
+
+def register_plugins(registry: PluginRegistry) -> None:
+    """
+    Register all plugins in the plugin registry
+
+    Args:
+        registry: PluginRegistry instance to register plugins in
+    """
+    logger.info("registering_plugins")
+
+    # Import plugins
+    from plugins.world_builder_plugin import WorldBuilderPlugin
+
+    # Register world builder plugin
+    world_builder = WorldBuilderPlugin()
+    registry.register(world_builder)
+    logger.info("registered_plugin",
+               name=world_builder.name,
+               graphs=len(world_builder.graphs),
+               tools=len(world_builder.tools))
+
+    logger.info("plugins_registered", total=1)
